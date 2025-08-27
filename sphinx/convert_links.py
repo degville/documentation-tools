@@ -16,11 +16,8 @@ def normalize_heading_to_anchor(heading_text):
         str: A normalized string suitable for use as an HTML anchor.
     """
     processed_heading = heading_text.lower()
-    # Replace spaces and underscores with hyphens
     processed_heading = re.sub(r'[\s_]+', '-', processed_heading)
-    # Remove any characters that are not alphanumeric or hyphens
     processed_heading = re.sub(r'[^a-z0-9-]', '', processed_heading)
-    # Remove leading/trailing hyphens
     return processed_heading.strip('-')
 
 def find_target_in_file(target_filepath, heading_anchor, cache):
@@ -38,15 +35,12 @@ def find_target_in_file(target_filepath, heading_anchor, cache):
         str or None: The found reference label (e.g., 'ref-doc-my-heading-title') or None if not found.
     """
     abs_target_filepath = os.path.abspath(target_filepath)
-    # Use a special key for H1 lookups to avoid cache collisions with specific anchor lookups.
     cache_key = (abs_target_filepath, heading_anchor if heading_anchor else "__FIRST_H1__")
 
     if cache_key in cache:
         return cache[cache_key]
 
     if not os.path.exists(abs_target_filepath):
-        # This warning is now more informative.
-        # print(f"    [Warning] Target file for link not found: {target_filepath}")
         cache[cache_key] = None
         return None
 
@@ -58,7 +52,8 @@ def find_target_in_file(target_filepath, heading_anchor, cache):
         cache[cache_key] = None
         return None
 
-    target_pattern = re.compile(r'^\((ref-[^)]+)\)=$')
+    # This more general pattern correctly finds any valid explicit target
+    target_pattern = re.compile(r'^\(([^)]+)\)=$')
     h1_heading_pattern = re.compile(r'^#\s+(.*)')
     any_heading_pattern = re.compile(r'^(#+)\s+(.*)')
     
@@ -72,6 +67,7 @@ def find_target_in_file(target_filepath, heading_anchor, cache):
                 if current_anchor == heading_anchor:
                     target_match = target_pattern.match(prev_line.strip())
                     if target_match:
+                        # Return the full label, e.g., 'ref-document-heading'
                         ref_label = target_match.group(1)
                         cache[cache_key] = ref_label
                         return ref_label
@@ -91,7 +87,7 @@ def find_target_in_file(target_filepath, heading_anchor, cache):
     cache[cache_key] = None
     return None
 
-def process_markdown_file(filepath, cache, root_dir):
+def process_markdown_file(filepath, cache, root_dir, use_link_text):
     """
     Reads a Markdown file, finds all internal links, and replaces them
     with MyST cross-references where possible.
@@ -100,13 +96,14 @@ def process_markdown_file(filepath, cache, root_dir):
         filepath (str): The path to the Markdown file to process.
         cache (dict): The cache for storing reference lookups.
         root_dir (str): The absolute path to the documentation root directory.
+        use_link_text (bool): If True, preserves the original link text in the reference.
     """
     try:
         source_dir = os.path.dirname(filepath)
         print(f"Scanning file: {os.path.basename(filepath)}...")
 
         with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
+[I            content = f.read()
         
         original_content = content
         
@@ -118,40 +115,35 @@ def process_markdown_file(filepath, cache, root_dir):
             
             parsed_url = urlparse(destination)
             
-            # Ignore external links (http, https, mailto, etc.)
-            if parsed_url.scheme:
-                return match.group(0)
+            if parsed_url.scheme: return match.group(0)
             
             link_path = parsed_url.path
-            # Ignore anchor-only links like [#my-anchor]
-            if not link_path:
-                return match.group(0)
+            if not link_path: return match.group(0)
 
-            # --- NEW PATH RESOLUTION LOGIC ---
             if link_path.startswith('/'):
-                # Path is relative to the documentation root.
-                # Remove the leading '/' before joining with the root directory.
                 base_path = os.path.join(root_dir, link_path.lstrip('/\\'))
             else:
-                # Path is relative to the current file's directory.
                 base_path = os.path.join(source_dir, link_path)
 
-            # Add .md extension if it's not present.
             if not base_path.lower().endswith('.md'):
                 target_filepath = f"{base_path}.md"
             else:
                 target_filepath = base_path
             
-            # Normalize path for the current OS (e.g., handles slashes).
             target_filepath = os.path.normpath(target_filepath)
-            # --- END NEW LOGIC ---
-
             heading_anchor = parsed_url.fragment
             
             ref_label = find_target_in_file(target_filepath, heading_anchor, cache)
             
             if ref_label:
-                new_link = f"{{ref}}`{ref_label}`"
+                # --- NEW LOGIC: Choose the reference format ---
+                if use_link_text:
+                    # Format: {ref}`My link text <target-label>`
+                    new_link = f"{{ref}}`{link_text} <{ref_label}>`"
+                else:
+                    # Format: {ref}`target-label`
+                    new_link = f"{{ref}}`{ref_label}`"
+                
                 print(f"  - Replacing '[{link_text}]({destination})' with '{new_link}'")
                 return new_link
             else:
@@ -170,7 +162,7 @@ def process_markdown_file(filepath, cache, root_dir):
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
 
-def main(root_directory):
+def main(root_directory, use_link_text):
     """
     Main execution function. Walks through a directory and processes all Markdown files.
     """
@@ -180,6 +172,8 @@ def main(root_directory):
         return
 
     print(f"Starting to convert Markdown links to MyST references in '{abs_root_dir}'...\n")
+    if use_link_text:
+        print("Mode: Preserving link text in references.\n")
     
     ref_cache = {}
     
@@ -190,7 +184,7 @@ def main(root_directory):
                 markdown_files_to_process.append(os.path.join(dirpath, filename))
 
     for filepath in markdown_files_to_process:
-        process_markdown_file(filepath, ref_cache, abs_root_dir)
+        process_markdown_file(filepath, ref_cache, abs_root_dir, use_link_text)
     
     print("Script finished.")
 
@@ -204,7 +198,12 @@ if __name__ == '__main__':
         default=".",
         help="The root directory of the documentation to scan for .md files. Defaults to the current directory."
     )
+    # --- NEW COMMAND-LINE FLAG ---
+    parser.add_argument(
+        '--use-link-text',
+        action='store_true',
+        help='Include the original link text in the MyST reference, e.g., {ref}`Link Text <target-label>`.'
+    )
     args = parser.parse_args()
     
-    main(args.directory)
-
+    main(args.directory, args.use_link_text)

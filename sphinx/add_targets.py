@@ -20,13 +20,14 @@ def generate_target_label(filename_no_ext, heading_text):
     processed_heading = processed_heading.strip('-')
     return f"(ref-{filename_no_ext}-{processed_heading})="
 
-def process_markdown_file(filepath):
+def process_markdown_file(filepath, level1_only):
     """
-    Reads a Markdown file, adds explicit targets before each heading if one
+    Reads a Markdown file, adds explicit targets before headings if one
     doesn't already exist, and overwrites the file with the new content.
 
     Args:
         filepath (str): The full path to the Markdown file.
+        level1_only (bool): If True, only process level-one headings.
     """
     try:
         filename = os.path.basename(filepath)
@@ -37,51 +38,52 @@ def process_markdown_file(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
-        # We must process the file content as a single list of lines to correctly
-        # handle the lookbehind check for existing targets.
-        output_lines = []
+        new_lines = []
         modified = False
         
-        heading_pattern = re.compile(r'^(#+)\s+(.*)')
-        # --- UPDATED LOGIC ---
-        # This regex is now more general. It will match any valid explicit target
-        # of the format `(some-label)=`, not just ones starting with `ref-`.
+        # --- UPDATED LOGIC: Choose the correct regex pattern ---
+        if level1_only:
+            # This pattern only matches headings starting with a single '#'
+            heading_pattern = re.compile(r'^#\s+(.*)')
+            print("  (Mode: Level 1 headings only)")
+        else:
+            # This pattern matches any heading level
+            heading_pattern = re.compile(r'^(#+)\s+(.*)')
+        
+        # This general pattern correctly identifies any existing target
         existing_target_pattern = re.compile(r'^\([^)]+\)=$')
 
-        # Keep track of the previous line to check for existing targets.
-        previous_line = ""
-        for current_line in lines:
+        for i, current_line in enumerate(lines):
             heading_match = heading_pattern.match(current_line)
             
+            # If the current line is not a heading we're interested in, just add it
             if not heading_match:
-                output_lines.append(current_line)
-                previous_line = current_line
+                new_lines.append(current_line)
                 continue
 
-            # This is a heading line. Check the previous line for a target.
-            heading_text = heading_match.group(2).strip()
+            # Check if the previous line already contains an explicit target
+            has_existing_target = False
+            if i > 0:
+                previous_line = lines[i-1].strip()
+                if existing_target_pattern.match(previous_line):
+                    has_existing_target = True
             
-            if existing_target_pattern.match(previous_line.strip()):
-                # A valid target already exists. Do nothing.
+            # The heading text is group 1 for the H1-only pattern, and group 2 for the general pattern
+            heading_text = (heading_match.group(1) if level1_only else heading_match.group(2)).strip()
+
+            if has_existing_target:
                 print(f"  - Found existing target for heading: '{heading_text}' -> Skipping.")
-                output_lines.append(current_line)
+                new_lines.append(current_line)
             else:
-                # No existing target. Generate and insert a new one.
                 print(f"  - Found heading: '{heading_text}' -> Adding new target.")
                 target_label = generate_target_label(filename_no_ext, heading_text)
-                output_lines.append(target_label + '\n')
-                output_lines.append(current_line)
+                new_lines.append(target_label + '\n')
+                new_lines.append(current_line)
                 modified = True
-            
-            previous_line = current_line
 
-        # If modifications were made, write the new content back to the file
         if modified:
-            # We need to reconstruct the file content.
-            # Using a temporary list and then writing is safer.
-            final_content = "".join(output_lines)
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(final_content)
+                f.writelines(new_lines)
             print(f"  -> Successfully updated {filename}\n")
         else:
             print(f"  -> No new targets needed in {filename}.\n")
@@ -89,12 +91,13 @@ def process_markdown_file(filepath):
     except Exception as e:
         print(f"Error processing file {filepath}: {e}")
 
-def main(root_directory):
+def main(root_directory, level1_only):
     """
     Walks through a directory and processes all Markdown (.md) files.
 
     Args:
         root_directory (str): The path to the directory containing documentation.
+        level1_only (bool): If True, only process level-one headings.
     """
     if not os.path.isdir(root_directory):
         print(f"Error: Directory '{root_directory}' not found.")
@@ -106,39 +109,8 @@ def main(root_directory):
         for filename in filenames:
             if filename.endswith('.md'):
                 full_path = os.path.join(dirpath, filename)
-                # I've simplified the logic to process one file at a time
-                # as the original implementation was slightly flawed.
-                # This new approach is more robust.
-                
-                # To do this correctly, we need to read all lines, process them,
-                # and then write back.
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                
-                new_lines = []
-                modified = False
-                
-                for i, line in enumerate(lines):
-                    heading_match = re.match(r'^(#+)\s+(.*)', line)
-                    if heading_match:
-                        # Check if previous line exists and if it's a target
-                        if i > 0 and re.match(r'^\([^)]+\)=$', lines[i-1].strip()):
-                            # Already has a target, do nothing
-                            pass
-                        else:
-                            # Add a new target
-                            filename_no_ext, _ = os.path.splitext(os.path.basename(full_path))
-                            heading_text = heading_match.group(2).strip()
-                            target_label = generate_target_label(filename_no_ext, heading_text)
-                            new_lines.append(target_label + '\n')
-                            modified = True
-                    new_lines.append(line)
-
-                if modified:
-                    print(f"Updating file: {full_path}")
-                    with open(full_path, 'w', encoding='utf-8') as f:
-                        f.writelines(new_lines)
-
+                process_markdown_file(full_path, level1_only)
+    
     print("Script finished.")
 
 if __name__ == '__main__':
@@ -151,19 +123,13 @@ if __name__ == '__main__':
         default=".",
         help="The root directory to scan for .md files. Defaults to the current directory."
     )
+    # --- NEW COMMAND-LINE FLAG ---
+    parser.add_argument(
+        '--level1',
+        action='store_true',
+        help='Only add targets to level 1 headings (e.g., # Heading).'
+    )
     args = parser.parse_args()
     
-    # I've simplified the main loop to be more direct and correct.
-    # The original main function was calling a processing function that had a slightly
-    # different logic. This consolidated version is clearer.
-    root_dir = args.directory
-    if not os.path.isdir(root_dir):
-        print(f"Error: Directory '{root_dir}' not found.")
-    else:
-        print(f"Starting to scan for Markdown files in '{root_dir}'...\n")
-        for dirpath, _, filenames in os.walk(root_dir):
-            for filename in filenames:
-                if filename.endswith('.md'):
-                    process_markdown_file(os.path.join(dirpath, filename))
-        print("\nScript finished.")
+    main(args.directory, args.level1)
 
