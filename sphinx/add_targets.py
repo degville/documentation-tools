@@ -1,135 +1,124 @@
 import os
 import re
-import argparse
 
-def generate_target_label(filename_no_ext, heading_text):
-    """
-    Generates a MyST-compatible target label from a filename and heading text,
-    always using the 'ref-' prefix.
+def slugify(text):
+    """Converts heading text into a Markdown-style anchor slug."""
+    return re.sub(r'[^a-z0-9]+', '-', text.lower()).strip('-')
 
-    Args:
-        filename_no_ext (str): The name of the markdown file without its extension.
-        heading_text (str): The raw text of the heading.
+def resolve_dest_path(root_dir, current_file, url_path):
+    """Resolves relative and absolute internal paths."""
+    if not url_path:  # Internal link within the same file (e.g., '#anchor')
+        return current_file
+    if url_path.startswith('/'):
+        return os.path.normpath(os.path.join(root_dir, url_path.lstrip('/')))
+    else:
+        return os.path.normpath(os.path.join(os.path.dirname(current_file), url_path))
 
-    Returns:
-        str: A formatted string to be used as an explicit target.
-    """
-    processed_heading = heading_text.lower()
-    processed_heading = re.sub(r'[\s_]+', '-', processed_heading)
-    processed_heading = re.sub(r'[^a-z0-9-]', '', processed_heading)
-    processed_heading = processed_heading.strip('-')
-    return f"(ref-{filename_no_ext}-{processed_heading})="
+def process_links_for_targets():
+    root_dir = os.path.abspath('.')
+    link_pattern = re.compile(r'(?<!\!)\[([^\]]+)\]\(([^)]+)\)')
+    heading_pattern = re.compile(r'^(#{1,6})\s+(.*)$')
 
-def process_markdown_file(filepath, level1_only):
-    """
-    Reads a Markdown file, adds explicit targets before headings if one
-    doesn't already exist, and overwrites the file with the new content.
-
-    Args:
-        filepath (str): The full path to the Markdown file.
-        level1_only (bool): If True, only process level-one headings.
-    """
-    try:
-        filename = os.path.basename(filepath)
-        filename_no_ext, _ = os.path.splitext(filename)
-        
-        print(f"Processing file: {filename}...")
-
-        with open(filepath, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        new_lines = []
-        modified = False
-        
-        # --- UPDATED LOGIC: Choose the correct regex pattern ---
-        if level1_only:
-            # This pattern only matches headings starting with a single '#'
-            heading_pattern = re.compile(r'^#\s+(.*)')
-            print("  (Mode: Level 1 headings only)")
-        else:
-            # This pattern matches any heading level
-            heading_pattern = re.compile(r'^(#+)\s+(.*)')
-        
-        # This general pattern correctly identifies any existing target
-        existing_target_pattern = re.compile(r'^\([^)]+\)=$')
-
-        for i, current_line in enumerate(lines):
-            heading_match = heading_pattern.match(current_line)
-            
-            # If the current line is not a heading we're interested in, just add it
-            if not heading_match:
-                new_lines.append(current_line)
+    for subdir, _, files in os.walk(root_dir):
+        for file in files:
+            if not file.endswith('.md'):
                 continue
-
-            # Check if the previous line already contains an explicit target
-            has_existing_target = False
-            if i > 0:
-                previous_line = lines[i-1].strip()
-                if existing_target_pattern.match(previous_line):
-                    has_existing_target = True
             
-            # The heading text is group 1 for the H1-only pattern, and group 2 for the general pattern
-            heading_text = (heading_match.group(1) if level1_only else heading_match.group(2)).strip()
+            filepath = os.path.join(subdir, file)
+            
+            # Read the current file to find links
+            with open(filepath, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
 
-            if has_existing_target:
-                print(f"  - Found existing target for heading: '{heading_text}' -> Skipping.")
-                new_lines.append(current_line)
-            else:
-                print(f"  - Found heading: '{heading_text}' -> Adding new target.")
-                target_label = generate_target_label(filename_no_ext, heading_text)
-                new_lines.append(target_label + '\n')
-                new_lines.append(current_line)
-                modified = True
+            for line_idx, line in enumerate(lines):
+                matches = link_pattern.finditer(line)
+                for match in matches:
+                    link_text = match.group(1)
+                    url = match.group(2)
+                    link_syntax = match.group(0)
+                    
+                    # Ignore external links and mailto
+                    if url.startswith(('http://', 'https://', 'mailto:')):
+                        continue
 
-        if modified:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                f.writelines(new_lines)
-            print(f"  -> Successfully updated {filename}\n")
-        else:
-            print(f"  -> No new targets needed in {filename}.\n")
+                    # Parse URL into path and anchor
+                    parts = url.split('#', 1)
+                    url_path = parts[0]
+                    anchor = parts[1] if len(parts) > 1 else None
 
-    except Exception as e:
-        print(f"Error processing file {filepath}: {e}")
+                    # Resolve destination file
+                    dest_path = resolve_dest_path(root_dir, filepath, url_path)
+                    
+                    status_prefix = f"{os.path.relpath(filepath, root_dir)}:{line_idx + 1} - {link_syntax}"
 
-def main(root_directory, level1_only):
-    """
-    Walks through a directory and processes all Markdown (.md) files.
+                    # Fallback: If path doesn't exist, try adding .md
+                    if not os.path.exists(dest_path) and not dest_path.endswith('.md'):
+                        if os.path.exists(dest_path + '.md'):
+                            dest_path += '.md'
 
-    Args:
-        root_directory (str): The path to the directory containing documentation.
-        level1_only (bool): If True, only process level-one headings.
-    """
-    if not os.path.isdir(root_directory):
-        print(f"Error: Directory '{root_directory}' not found.")
-        return
+                    if not os.path.exists(dest_path):
+                        print(f"{status_prefix} - error: destination file not found")
+                        continue
 
-    print(f"Starting to scan for Markdown files in '{root_directory}'...\n")
-    
-    for dirpath, _, filenames in os.walk(root_directory):
-        for filename in filenames:
-            if filename.endswith('.md'):
-                full_path = os.path.join(dirpath, filename)
-                process_markdown_file(full_path, level1_only)
-    
-    print("Script finished.")
+                    # Check if the resolved path is a directory instead of a file
+                    if os.path.isdir(dest_path):
+                        if os.path.isfile(os.path.join(dest_path, 'index.md')):
+                            dest_path = os.path.join(dest_path, 'index.md')
+                        elif os.path.isfile(os.path.join(dest_path, 'README.md')):
+                            dest_path = os.path.join(dest_path, 'README.md')
+                        elif os.path.isfile(os.path.join(dest_path, 'readme.md')):
+                            dest_path = os.path.join(dest_path, 'readme.md')
+                        else:
+                            print(f"{status_prefix} - error: destination is a directory, but no index.md or README.md found")
+                            continue
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description="A script to automatically insert explicit heading targets in MyST Markdown files."
-    )
-    parser.add_argument(
-        "directory",
-        nargs='?',
-        default=".",
-        help="The root directory to scan for .md files. Defaults to the current directory."
-    )
-    # --- NEW COMMAND-LINE FLAG ---
-    parser.add_argument(
-        '--level1',
-        action='store_true',
-        help='Only add targets to level 1 headings (e.g., # Heading).'
-    )
-    args = parser.parse_args()
-    
-    main(args.directory, args.level1)
+                    # Read destination file
+                    with open(dest_path, 'r', encoding='utf-8') as df:
+                        dest_lines = df.readlines()
 
+                    target_idx = -1
+                    target_heading_text = ""
+                    
+                    # Find the target heading
+                    for d_idx, d_line in enumerate(dest_lines):
+                        heading_match = heading_pattern.match(d_line)
+                        if heading_match:
+                            h_text = heading_match.group(2).strip()
+                            if anchor:
+                                if slugify(h_text) == anchor:
+                                    target_idx = d_idx
+                                    target_heading_text = h_text
+                                    break
+                            else:
+                                # No anchor, grab the very first heading
+                                target_idx = d_idx
+                                target_heading_text = h_text
+                                break
+                    
+                    if target_idx == -1:
+                        print(f"{status_prefix} - error: heading/anchor not found")
+                        continue
+
+                    # Create the expected reference string fallback
+                    dest_filename = os.path.splitext(os.path.basename(dest_path))[0].replace(' ', '-')
+                    expected_ref = f"ref-{dest_filename}_{slugify(target_heading_text)}"
+                    ref_line = f"({expected_ref})=\n"
+
+                    # Check if ANY reference already exists on the line above
+                    existing_ref_match = None
+                    if target_idx > 0:
+                        # Matches any string formatted as (something)=
+                        existing_ref_match = re.match(r'^\(([^)]+)\)=$', dest_lines[target_idx - 1].strip())
+                    
+                    if existing_ref_match:
+                        existing_ref = existing_ref_match.group(1)
+                        print(f"{status_prefix} - exists {existing_ref}")
+                    else:
+                        # Insert the newly generated reference
+                        dest_lines.insert(target_idx, ref_line)
+                        with open(dest_path, 'w', encoding='utf-8') as df:
+                            df.writelines(dest_lines)
+                        print(f"{status_prefix} - created {expected_ref}")
+
+if __name__ == "__main__":
+    process_links_for_targets()
