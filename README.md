@@ -6,3 +6,5 @@ Assorted scripts and tools for processing documentation
 - `processing/interface-headings.py` edit the second line of all Markdown files in a directory to be a top-level heading with a title based on the filename.
 - `processing/multiline-search-replace.py` convenience script to search and replace one or more lines in a directory of text files, with dry run option.
 - `processing/link-repair.py` builds a table of known links and their references, identifies null links, and then offers suggests from the table to replace them.
+- `processing/gb-us/translate-gb-us.py` converts a documentation set between US English and English English:
+  - `python translate_md.py ./docs --mode to-gb --dict https://raw.githubusercontent.com/degville/documentation-tools/refs/heads/main/processing/gb-us/us-gb.dict`
